@@ -1,1 +1,9 @@
-{"functions":{"api/index.py":{"memory":128,"maxDuration":10,"runtime":"python3.10"}}}
+{
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.10",
+      "memory": 128,
+      "maxDuration": 10
+    }
+  }
+}
