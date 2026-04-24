@@ -14,7 +14,6 @@ TOKEN = "8269135710:AAE9mv55_QJOg3VN6U7JploC6KqigKBZf6Y"
 TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}"
 FIRESTORE_URL = "https://firestore.googleapis.com/v1/projects/grafikpro-d3500/databases/(default)/documents"
 API_KEY = "AIzaSyAmP4IW-mcqhXT1L6s4vx5_Z7IZbi1YqI8"
-
 # === БАЗА ДАННЫХ ===
 def firestore_get(collection, doc_id):
     r = requests.get(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}")
@@ -115,8 +114,7 @@ def firestore_add(collection, data):
 
 def firestore_delete(collection, doc_id):
     return requests.delete(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}").status_code == 200
-
-# === TELEGRAM ===
+    # === TELEGRAM ===
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "Markdown"}
     if reply_markup: payload["reply_markup"] = json.dumps(reply_markup)
@@ -241,8 +239,7 @@ def handle_dashboard(chat_id, period="today"):
         change = int((total - prev_total) / prev_total * 100)
         text += f"\n\n{'📈' if change > 0 else '📉'} {change:+d}% к прошлому периоду"
     send_message(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "Сегодня", "callback_data": "dash_today"}, {"text": "Неделя", "callback_data": "dash_week"}, {"text": "Месяц", "callback_data": "dash_month"}]]})
-
-# === ПЕРЕНОС ===
+    # === ПЕРЕНОС ===
 def handle_reschedule_start(chat_id, appt_id):
     appt = firestore_get("appointments", appt_id)
     if not appt: return send_message(chat_id, "Запись не найдена.")
@@ -325,8 +322,7 @@ def handle_client_phone(chat_id, phone):
     if addr: text += f"\n📍 {addr}"
     send_message(chat_id, text + f"\n\n{state.get('client_name')} | {phone_clean}", reply_markup=client_menu())
     send_message(int(link["master_id"]), f"🔔 *Новая запись!*\n\n{state.get('client_name')}\n{phone_clean}\n{state.get('service')}\n{state.get('date')} в {state.get('time')}")
-
-# === СВОБОДНЫЕ ОКНА ===
+    # === СВОБОДНЫЕ ОКНА ===
 def handle_free_slots(chat_id):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     master = firestore_get("masters", str(chat_id))
@@ -414,8 +410,7 @@ def handle_cancel_appointment(chat_id, appt_id):
     if appt.get("master_id"): send_message(int(appt["master_id"]), f"❌ *Отмена!*\n{appt.get('client_name')} отменил {appt.get('service')} {appt.get('date')} в {appt.get('time')}")
     firestore_delete("appointments", appt_id)
     send_message(chat_id, "✅ Отменено.", reply_markup=client_menu())
-
-# === НАСТРОЙКИ ===
+    # === НАСТРОЙКИ ===
 def handle_services_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
@@ -583,8 +578,7 @@ def handle_manual_time(chat_id, time):
     state = STATES.pop(str(chat_id), {})
     firestore_add("appointments", {"master_id": str(chat_id), "client_name": state.get("client_name",""), "client_phone": state.get("client_phone",""), "service": state.get("service",""), "date": state.get("date",""), "time": time, "status": "confirmed"})
     send_message(chat_id, f"✅ {state.get('client_name')}\n{state.get('service')}\n{state.get('date')} в {time}", reply_markup=master_menu())
-
-# === ОБРАБОТКА ===
+    # === ОБРАБОТКА ===
 def handle_text(chat_id, user_name, username, text):
     state = STATES.get(str(chat_id), {}).get("state")
     if state == "adding_service_name":
@@ -678,8 +672,7 @@ def process_update(update):
         else: handle_text(chat_id, user_name, msg["from"].get("username", ""), text)
     elif "callback_query" in update:
         handle_callback(update["callback_query"]["message"]["chat"]["id"], update["callback_query"]["data"])
-
-@app.route('/api/webhook', methods=['POST'])
+        @app.route('/api/webhook', methods=['POST'])
 def webhook():
     try:
         update = request.get_json()
