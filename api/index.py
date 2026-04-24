@@ -1090,7 +1090,17 @@ def handle_manual_date(chat_id, date):
 
 def handle_manual_time(chat_id, time):
     state = STATES.pop(str(chat_id), {})
-    firestore_add("appointments", {"master_id": str(chat_id), "client_name": state.get("client_name",""), "client_phone": state.get("client_phone",""), "service": state.get("service",""), "date": state.get("date",""), "time": time, "status": "confirmed"})
+    if not state:
+        return send_message(chat_id, "❌ Сессия истекла.", reply_markup=master_menu())
+    firestore_add("appointments", {
+        "master_id": str(chat_id),
+        "client_name": state.get("client_name",""),
+        "client_phone": state.get("client_phone",""),
+        "service": state.get("service",""),
+        "date": state.get("date",""),
+        "time": time,
+        "status": "confirmed"
+    })
     send_message(chat_id, f"✅ {state.get('client_name')}\n{state.get('service')}\n{state.get('date')} в {time}", reply_markup=master_menu())
 
 def handle_portfolio_settings(chat_id):
