@@ -1,4 +1,4 @@
-from http.server import BaseHTTPRequestHandler
+from flask import Flask, request, jsonify
 import json
 import requests
 import traceback
@@ -8,11 +8,14 @@ import re
 import threading
 import time
 
+app = Flask(__name__)
+
 TOKEN = "8269135710:AAE9mv55_QJOg3VN6U7JploC6KqigKBZf6Y"
 TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}"
 FIRESTORE_URL = "https://firestore.googleapis.com/v1/projects/grafikpro-d3500/databases/(default)/documents"
 API_KEY = "AIzaSyAmP4IW-mcqhXT1L6s4vx5_Z7IZbi1YqI8"
 
+# === БАЗА ДАННЫХ ===
 def firestore_get(collection, doc_id):
     r = requests.get(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}")
     if r.status_code != 200: return None
@@ -113,6 +116,7 @@ def firestore_add(collection, data):
 def firestore_delete(collection, doc_id):
     return requests.delete(f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}").status_code == 200
 
+# === TELEGRAM ===
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode or "Markdown"}
     if reply_markup: payload["reply_markup"] = json.dumps(reply_markup)
@@ -122,8 +126,28 @@ def send_document(chat_id, file_content, filename):
     files = {'document': (filename, file_content)}
     return requests.post(f"{TELEGRAM_URL}/sendDocument", data={'chat_id': chat_id}, files=files)
 
-STATES = {}
+# === НАПОМИНАНИЯ ===
+def reminder_worker():
+    while True:
+        try:
+            now = datetime.now()
+            reminder_time = (now + timedelta(hours=1)).strftime('%H:%M')
+            tomorrow = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+            for date in [now.strftime('%Y-%m-%d'), tomorrow]:
+                all_appts = firestore_query("appointments", "date", "EQUAL", date)
+                for a in all_appts:
+                    if a.get("time") == reminder_time and a.get("status") == "confirmed" and not a.get("reminded"):
+                        send_message(int(a["master_id"]), f"⏰ *Напоминание!*\nЧерез час: {a.get('client_name')} — {a.get('service')}")
+                        if "client_id" in a:
+                            send_message(int(a["client_id"]), f"⏰ *Напоминание!*\nСегодня в {a.get('time')}: {a.get('service')}")
+                        firestore_set("appointments", a["_id"], {"reminded": True})
+        except Exception as e:
+            print(f"Reminder error: {e}")
+        time.sleep(60)
 
+threading.Thread(target=reminder_worker, daemon=True).start()
+
+# === КЛАВИАТУРЫ ===
 def master_menu():
     return {"keyboard": [["📊 Дашборд", "📅 Расписание"], ["➕ Новая запись", "👥 Клиенты"], ["🔗 Моя ссылка", "📢 Свободные окна"], ["⚙️ Настройки"]], "resize_keyboard": True}
 
@@ -133,6 +157,9 @@ def client_menu():
 def settings_menu():
     return {"keyboard": [["💈 Услуги", "⏰ Часы"], ["🚫 Перерывы", "📍 Адрес"], ["🔙 В меню"]], "resize_keyboard": True}
 
+STATES = {}
+
+# === СТАРТ ===
 def handle_start(chat_id, user_name):
     if firestore_get("masters", str(chat_id)):
         send_message(chat_id, f"👋 {user_name}!", reply_markup=master_menu())
@@ -142,13 +169,14 @@ def handle_start(chat_id, user_name):
         send_message(chat_id, "👋 *График.Про*\n\nКто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
 def handle_master_registration(chat_id, user_name, username):
-    firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "services": [], "schedule": {"start": "09:00", "end": "18:00"}, "address": "", "completed_onboarding": False, "created_at": datetime.now().isoformat()})
+    firestore_set("masters", str(chat_id), {"name": user_name, "username": username, "services": [], "schedule": {"start": "09:00", "end": "18:00"}, "address": "", "completed_onboarding": False})
     send_message(chat_id, f"✅ {user_name}, добро пожаловать!")
     start_onboarding(chat_id)
 
 def start_onboarding(chat_id):
     send_message(chat_id, "👋 *Давай настроим твой кабинет!*\n\n*Шаг 1:* Добавь услуги", reply_markup={"inline_keyboard": [[{"text": "💈 Добавить услуги", "callback_data": "addservice"}]]})
 
+# === УМНАЯ СЕТКА ===
 def get_smart_slots(master, date, service_name):
     sched = master.get("schedule", {"start": "09:00", "end": "18:00"})
     start_h = int(sched["start"].split(":")[0])
@@ -179,6 +207,7 @@ def get_smart_slots(master, date, service_name):
         t += 30
     return slots
 
+# === АНАЛИТИКА ===
 def handle_dashboard(chat_id, period="today"):
     today = datetime.now().strftime('%Y-%m-%d')
     appointments = firestore_query("appointments", "master_id", "EQUAL", str(chat_id))
@@ -213,6 +242,7 @@ def handle_dashboard(chat_id, period="today"):
         text += f"\n\n{'📈' if change > 0 else '📉'} {change:+d}% к прошлому периоду"
     send_message(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "Сегодня", "callback_data": "dash_today"}, {"text": "Неделя", "callback_data": "dash_week"}, {"text": "Месяц", "callback_data": "dash_month"}]]})
 
+# === ПЕРЕНОС ===
 def handle_reschedule_start(chat_id, appt_id):
     appt = firestore_get("appointments", appt_id)
     if not appt: return send_message(chat_id, "Запись не найдена.")
@@ -235,6 +265,7 @@ def handle_reschedule_time(chat_id, appt_id, date, time):
     STATES.pop(str(chat_id), None)
     send_message(chat_id, f"✅ Перенесено на {date} {time}", reply_markup=master_menu())
 
+# === КЛИЕНТ ===
 def handle_client_start(chat_id, link_id):
     if not firestore_get("clients", str(chat_id)): firestore_set("clients", str(chat_id), {"created_at": datetime.now().isoformat()})
     link = firestore_get("links", link_id)
@@ -295,6 +326,7 @@ def handle_client_phone(chat_id, phone):
     send_message(chat_id, text + f"\n\n{state.get('client_name')} | {phone_clean}", reply_markup=client_menu())
     send_message(int(link["master_id"]), f"🔔 *Новая запись!*\n\n{state.get('client_name')}\n{phone_clean}\n{state.get('service')}\n{state.get('date')} в {state.get('time')}")
 
+# === СВОБОДНЫЕ ОКНА ===
 def handle_free_slots(chat_id):
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     master = firestore_get("masters", str(chat_id))
@@ -383,6 +415,7 @@ def handle_cancel_appointment(chat_id, appt_id):
     firestore_delete("appointments", appt_id)
     send_message(chat_id, "✅ Отменено.", reply_markup=client_menu())
 
+# === НАСТРОЙКИ ===
 def handle_services_settings(chat_id):
     master = firestore_get("masters", str(chat_id))
     if not master: return send_message(chat_id, "Сначала зарегистрируйтесь.")
@@ -488,6 +521,7 @@ def handle_address_set(chat_id, text):
     STATES.pop(str(chat_id), None)
     send_message(chat_id, f"✅ Адрес сохранён: {text}", reply_markup=settings_menu())
 
+# === РУЧНАЯ ЗАПИСЬ ===
 def handle_manual_appointment_start(chat_id):
     STATES[str(chat_id)] = {"state": "manual_name"}
     send_message(chat_id, "📝 *Новая запись*\nИмя клиента:", reply_markup={"keyboard": [["🔙 Отмена"]], "resize_keyboard": True})
@@ -550,6 +584,7 @@ def handle_manual_time(chat_id, time):
     firestore_add("appointments", {"master_id": str(chat_id), "client_name": state.get("client_name",""), "client_phone": state.get("client_phone",""), "service": state.get("service",""), "date": state.get("date",""), "time": time, "status": "confirmed"})
     send_message(chat_id, f"✅ {state.get('client_name')}\n{state.get('service')}\n{state.get('date')} в {time}", reply_markup=master_menu())
 
+# === ОБРАБОТКА ===
 def handle_text(chat_id, user_name, username, text):
     state = STATES.get(str(chat_id), {}).get("state")
     if state == "adding_service_name":
@@ -644,16 +679,15 @@ def process_update(update):
     elif "callback_query" in update:
         handle_callback(update["callback_query"]["message"]["chat"]["id"], update["callback_query"]["data"])
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        cl = int(self.headers.get('Content-Length', 0))
-        if cl:
-            try: process_update(json.loads(self.rfile.read(cl).decode('utf-8')))
-            except Exception as e: print(f"Error: {e}\n{traceback.format_exc()}")
-        self.send_response(200); self.send_header('Content-type','application/json'); self.end_headers()
-        self.wfile.write(json.dumps({"status":"ok"}).encode())
-    def do_GET(self):
-        self.send_response(200); self.send_header('Content-type','application/json'); self.end_headers()
-        self.wfile.write(json.dumps({"status":"bot online"}).encode())
+@app.route('/api/webhook', methods=['POST'])
+def webhook():
+    try:
+        update = request.get_json()
+        process_update(update)
+    except Exception as e:
+        print(f"Error: {e}\n{traceback.format_exc()}")
+    return jsonify({"status": "ok"})
 
-app = handler
+@app.route('/api/health')
+def health():
+    return jsonify({"status": "bot online"})
