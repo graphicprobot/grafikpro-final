@@ -470,19 +470,35 @@ def handle_add_service_price(chat_id, price_text):
 
 def handle_add_service_duration(chat_id, dur_text):
     state = STATES.get(str(chat_id), {})
-    try: duration = int(dur_text.strip())
-    except: return send_message(chat_id, "❌ Введите число.")
+    if not state:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "❌ Сессия истекла. Начните заново.", reply_markup=settings_menu())
+    
+    name = state.get("name", "")
+    price = state.get("price", 0)
+    
+    try:
+        duration = int(dur_text.strip())
+    except:
+        return send_message(chat_id, "❌ Введите число минут.")
+    
     master = firestore_get("masters", str(chat_id))
+    if not master:
+        STATES.pop(str(chat_id), None)
+        return send_message(chat_id, "❌ Мастер не найден. Зарегистрируйтесь заново: /start")
+    
     services = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name")]
-    services.append({"name": state["name"], "price": state["price"], "duration": duration})
+    services.append({"name": name, "price": price, "duration": duration})
     firestore_set("masters", str(chat_id), {"services": services})
+    
     STATES.pop(str(chat_id), None)
-    # Онбординг
-        if master and not master.get("completed_onboarding"):
+    
+    # Проверяем онбординг
+    if not master.get("completed_onboarding"):
         firestore_set("masters", str(chat_id), {"completed_onboarding": True})
-        send_message(chat_id, f"✅ *Отлично!*\n\nТеперь настрой часы работы: /start → ⚙️ Настройки → ⏰ Часы", reply_markup=master_menu())
+        send_message(chat_id, f"✅ *Отлично!*\n\nТеперь настрой часы работы:\n⚙️ Настройки → ⏰ Часы", reply_markup=master_menu())
     else:
-        send_message(chat_id, f"✅ *{state['name']}* — {state['price']}₽, {duration}мин", reply_markup=settings_menu())
+        send_message(chat_id, f"✅ *{name}* — {price}₽, {duration}мин", reply_markup=settings_menu())
 
 def handle_delete_service(chat_id, name):
     master = firestore_get("masters", str(chat_id))
