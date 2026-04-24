@@ -44,8 +44,12 @@ def firestore_get(collection, doc_id):
     return result
 
 def firestore_set(collection, doc_id, data):
+    url = f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}"
+    
+    # Пробуем сначала PATCH (обновить существующий)
     update_fields = list(data.keys())
-    url = f"{FIRESTORE_URL}/{collection}/{doc_id}?updateMask.fieldPaths={'&updateMask.fieldPaths='.join(update_fields)}&key={API_KEY}"
+    patch_url = f"{url}&updateMask.fieldPaths={'&updateMask.fieldPaths='.join(update_fields)}"
+    
     fields = {}
     for key, val in data.items():
         if isinstance(val, str): fields[key] = {"stringValue": val}
@@ -67,7 +71,18 @@ def firestore_set(collection, doc_id, data):
                 elif isinstance(v, int): map_fields[k] = {"integerValue": str(v)}
             fields[key] = {"mapValue": {"fields": map_fields}}
         elif isinstance(val, int): fields[key] = {"integerValue": str(val)}
-    return requests.patch(url, json={"fields": fields}).status_code in [200, 201]
+    
+    body = {"fields": fields}
+    
+    # Пробуем PATCH
+    r = requests.patch(patch_url, json=body)
+    if r.status_code in [200, 201]:
+        return True
+    
+    # Если не найден — создаём через POST с указанием documentId
+    create_url = f"{FIRESTORE_URL}/{collection}?documentId={doc_id}&key={API_KEY}"
+    r2 = requests.post(create_url, json=body)
+    return r2.status_code in [200, 201]
 
 def firestore_query(collection, field, operator, value):
     body = {"structuredQuery": {"from": [{"collectionId": collection}], "where": {"fieldFilter": {"field": {"fieldPath": field}, "op": operator, "value": {"stringValue": str(value)}}}}}
