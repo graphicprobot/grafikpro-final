@@ -44,8 +44,6 @@ def firestore_get(collection, doc_id):
 
 def firestore_set(collection, doc_id, data):
     url = f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}"
-    update_fields = list(data.keys())
-    patch_url = f"{url}&updateMask.fieldPaths={'&updateMask.fieldPaths='.join(update_fields)}"
     fields = {}
     for key, val in data.items():
         if isinstance(val, str): fields[key] = {"stringValue": val}
@@ -67,9 +65,12 @@ def firestore_set(collection, doc_id, data):
                 elif isinstance(v, int): map_fields[k] = {"integerValue": str(v)}
             fields[key] = {"mapValue": {"fields": map_fields}}
         elif isinstance(val, int): fields[key] = {"integerValue": str(val)}
+        elif isinstance(val, bool): fields[key] = {"booleanValue": val}
+        elif val is None: fields[key] = {"nullValue": None}
     body = {"fields": fields}
-    r = requests.patch(patch_url, json=body)
-    if r.status_code in [200, 201]: return True
+    r = requests.patch(url, json=body)
+    if r.status_code in [200, 201]:
+        return True
     create_url = f"{FIRESTORE_URL}/{collection}?documentId={doc_id}&key={API_KEY}"
     r2 = requests.post(create_url, json=body)
     return r2.status_code in [200, 201]
