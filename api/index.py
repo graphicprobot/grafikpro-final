@@ -44,17 +44,8 @@ def firestore_get(collection, doc_id):
 
 def firestore_set(collection, doc_id, data):
     url = f"{FIRESTORE_URL}/{collection}/{doc_id}?key={API_KEY}"
-    
-    # Сначала получаем существующие данные
-    existing = firestore_get(collection, doc_id) or {}
-    
-    # Объединяем существующие с новыми
-    for key, val in data.items():
-        existing[key] = val
-    
-    # Теперь сохраняем всё вместе
     fields = {}
-    for key, val in existing.items():
+    for key, val in data.items():
         if isinstance(val, str): fields[key] = {"stringValue": val}
         elif isinstance(val, list):
             items = []
@@ -80,12 +71,9 @@ def firestore_set(collection, doc_id, data):
             fields[key] = {"mapValue": {"fields": map_fields}}
         elif isinstance(val, int): fields[key] = {"integerValue": str(val)}
         elif isinstance(val, bool): fields[key] = {"booleanValue": val}
-        elif val is None: fields[key] = {"nullValue": None}
-    
     body = {"fields": fields}
     r = requests.patch(url, json=body)
     if r.status_code in [200, 201]: return True
-    
     create_url = f"{FIRESTORE_URL}/{collection}?documentId={doc_id}&key={API_KEY}"
     r2 = requests.post(create_url, json=body)
     return r2.status_code in [200, 201]
