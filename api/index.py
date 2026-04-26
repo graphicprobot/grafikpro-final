@@ -1,6 +1,6 @@
 """
 Мастерилка — бот для записи клиентов
-Версия: 3.2.4 (смена роли)
+Версия: 3.2.5 (подтверждение записи + улучшения UX)
 """
 
 import os
@@ -324,12 +324,12 @@ def onboarding_step_2(chat_id):
 def onboarding_step_3(chat_id):
     DB.set("masters", str(chat_id), {"onboarding_step": 3})
     States.set(chat_id, {"state": "onboarding_address"})
-    TG.send(chat_id, "📍 *Шаг 3 из 4: Адрес*", reply_markup={"inline_keyboard": [[{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}]]})
+    TG.send(chat_id, "📍 *Шаг 3 из 4: Адрес*", reply_markup={"inline_keyboard": [[{"text": "⏩ Пропустить", "callback_data": "onboarding_skip"}], [{"text": "🔙 Назад", "callback_data": "back_to_step2"}]]})
 
 def onboarding_step_4(chat_id):
     DB.set("masters", str(chat_id), {"onboarding_step": 4})
     States.set(chat_id, {"state": "onboarding_portfolio"})
-    TG.send(chat_id, "🖼 *Шаг 4 из 4: Портфолио*", reply_markup={"inline_keyboard": [[{"text": "⏩ Завершить", "callback_data": "onboarding_finish"}]]})
+    TG.send(chat_id, "🖼 *Шаг 4 из 4: Портфолио*", reply_markup={"inline_keyboard": [[{"text": "⏩ Завершить", "callback_data": "onboarding_finish"}], [{"text": "🔙 Назад", "callback_data": "back_to_step3"}]]})
 
 def finish_onboarding(chat_id):
     if not DB.get("masters", str(chat_id)): return TG.send(chat_id, "❌ Ошибка. /start")
@@ -493,7 +493,7 @@ def handle_client_booking_start(chat_id, link_id):
     master = DB.get("masters", link["master_id"])
     if not master: return TG.send(chat_id, "❌ Мастер не найден.")
     svcs = [s for s in master.get("services", []) if isinstance(s, dict) and s.get("name") and not s.get("disabled")]
-    if not svcs: return TG.send(chat_id, "❌ Нет услуг.")
+    if not svcs: return TG.send(chat_id, "😔 *Мастер пока не добавил услуги.*\n\nПожалуйста, свяжитесь с ним напрямую или попробуйте позже.")
     States.set(chat_id, {"state": "client_booking", "master_id": link["master_id"], "master_name": master.get("name","Мастер"), "master_addr": master.get("address",""), "services": svcs})
     text = f"👤 *{master.get('name','Мастер')}*\n"
     if master.get("address"): text += f"📍 {master['address']}\n"
@@ -527,7 +527,27 @@ def handle_booking_date(chat_id, date_str):
 
 def handle_booking_time(chat_id, time_str):
     s = States.get(chat_id)
-    s["time"], s["state"] = time_str, "booking_name"
+    s["time"], s["state"] = time_str, "booking_confirm"
+    States.set(chat_id, s)
+    master = DB.get("masters", s.get("master_id"))
+    TG.send(chat_id,
+        f"📋 *Проверьте данные:*\n\n"
+        f"👤 Мастер: *{master.get('name','')}*\n"
+        f"💈 Услуга: *{s.get('service','')}*\n"
+        f"📅 Дата: *{s.get('date','')}*\n"
+        f"⏰ Время: *{time_str}*\n\n"
+        f"Всё верно?",
+        reply_markup={"inline_keyboard": [
+            [{"text": "✅ Подтвердить", "callback_data": f"bkconfirm_{time_str}"}],
+            [{"text": "🔄 Выбрать другое время", "callback_data": f"bkservice_{s.get('service','')}"}],
+            [{"text": "🔙 Отмена", "callback_data": "booking_cancel"}]
+        ]})
+
+def handle_booking_confirm(chat_id, time_str):
+    s = States.get(chat_id)
+    if not s: return TG.send(chat_id, "❌ Сессия истекла.")
+    s["time"] = time_str
+    s["state"] = "booking_name"
     States.set(chat_id, s)
     TG.send(chat_id, "📝 Ваше имя:", reply_markup=KBD.cancel())
 
@@ -862,7 +882,6 @@ def handle_text(chat_id, user_name, username, text):
     if state == "manual_phone": return handle_manual_phone(chat_id, text)
     if state == "finding_master": return handle_find_master(chat_id, text)
     
-    # Смена роли
     if text == "🔄 Я клиент" and master:
         DB.delete("masters", str(chat_id))
         States.clear(chat_id)
@@ -924,6 +943,8 @@ def handle_callback(chat_id, data):
     if data == "onboarding_add_more": States.set(chat_id, {"state": "onboarding_services"}); return TG.send(chat_id, "✏️ Название:")
     if data == "onboarding_finish": return finish_onboarding(chat_id)
     if data == "restart_onboarding": return start_onboarding(chat_id)
+    if data == "back_to_step2": return onboarding_step_2(chat_id)
+    if data == "back_to_step3": return onboarding_step_3(chat_id)
     if data == "addservice": return start_add_service(chat_id)
     if data.startswith("delservice_"): return delete_service(chat_id, data.replace("delservice_",""))
     if data == "settings_back": States.clear(chat_id); return TG.send(chat_id, "⚙️ *Настройки*", reply_markup=KBD.settings())
@@ -945,6 +966,7 @@ def handle_callback(chat_id, data):
     if data.startswith("bkservice_"): return handle_booking_service(chat_id, data.replace("bkservice_",""))
     if data.startswith("bkdate_"): return handle_booking_date(chat_id, data.replace("bkdate_",""))
     if data.startswith("bktime_"): return handle_booking_time(chat_id, data.replace("bktime_",""))
+    if data.startswith("bkconfirm_"): return handle_booking_confirm(chat_id, data.replace("bkconfirm_",""))
     if data.startswith("manservice_"): return handle_manual_service(chat_id, data.replace("manservice_",""))
     if data.startswith("mandate_"): return handle_manual_date(chat_id, data.replace("mandate_",""))
     if data.startswith("mantime_"): return handle_manual_time(chat_id, data.replace("mantime_",""))
