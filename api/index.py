@@ -1,6 +1,6 @@
 """
 Мастерилка — бот для записи клиентов
-Версия: 3.2.3 (новое название)
+Версия: 3.2.4 (смена роли)
 """
 
 import os
@@ -191,11 +191,11 @@ class TG:
 class KBD:
     @staticmethod
     def master_main():
-        return {"keyboard": [["📊 Сегодня", "📅 Расписание"], ["➕ Новая запись", "👥 Клиенты"], ["🔗 Моя ссылка", "⚙️ Настройки"], ["❓ Помощь"]], "resize_keyboard": True}
+        return {"keyboard": [["📊 Сегодня", "📅 Расписание"], ["➕ Новая запись", "👥 Клиенты"], ["🔗 Моя ссылка", "⚙️ Настройки"], ["🔄 Я клиент", "❓ Помощь"]], "resize_keyboard": True}
     
     @staticmethod
     def client_main():
-        return {"keyboard": [["📋 Мои записи"], ["🔗 Записаться по ссылке"], ["📤 Поделиться ссылкой"], ["🔍 Найти мастера"], ["❓ Помощь"]], "resize_keyboard": True}
+        return {"keyboard": [["📋 Мои записи"], ["🔗 Записаться по ссылке"], ["📤 Поделиться ссылкой"], ["🔍 Найти мастера"], ["🔄 Я мастер", "❓ Помощь"]], "resize_keyboard": True}
     
     @staticmethod
     def settings():
@@ -862,6 +862,16 @@ def handle_text(chat_id, user_name, username, text):
     if state == "manual_phone": return handle_manual_phone(chat_id, text)
     if state == "finding_master": return handle_find_master(chat_id, text)
     
+    # Смена роли
+    if text == "🔄 Я клиент" and master:
+        DB.delete("masters", str(chat_id))
+        States.clear(chat_id)
+        return TG.send(chat_id, "Роль сброшена. Кто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
+    if text == "🔄 Я мастер" and client:
+        DB.delete("clients", str(chat_id))
+        States.clear(chat_id)
+        return TG.send(chat_id, "Роль сброшена. Кто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
+    
     if text == "👤 Я мастер": return TG.send(chat_id, "Вы уже зарегистрированы!", reply_markup=KBD.master_main()) if master and master.get("completed_onboarding") else register_master(chat_id, user_name, username)
     if text == "👥 Я клиент":
         if not client: DB.set("clients", str(chat_id), {"created_at": now().isoformat()})
@@ -900,7 +910,7 @@ def handle_text(chat_id, user_name, username, text):
     if text == "🔙 В меню" and master: States.clear(chat_id); return TG.send(chat_id, "Главное меню", reply_markup=KBD.master_main())
     if text == "📋 Мои записи": return handle_client_appointments(chat_id)
     if text == "🔍 Найти мастера": States.set(chat_id, {"state": "finding_master"}); return TG.send(chat_id, "🔍 Номер:", reply_markup=KBD.cancel())
-    if text == "❓ Помощь": return TG.send(chat_id, "📖 *Помощь*\n\n📊 *Сегодня* — сводка\n📅 *Расписание* — записи\n➕ *Новая запись* — вручную\n👥 *Клиенты* — база\n🔗 *Моя ссылка* — клиентам\n⚙️ *Настройки* — услуги, часы" if master else "📖 *Помощь*\n\n📋 *Мои записи*\n🔗 *Записаться по ссылке*\n📤 *Поделиться ссылкой*\n🔍 *Найти мастера*")
+    if text == "❓ Помощь": return TG.send(chat_id, "📖 *Помощь*\n\n📊 *Сегодня* — сводка\n📅 *Расписание* — записи\n➕ *Новая запись* — вручную\n👥 *Клиенты* — база\n🔗 *Моя ссылка* — клиентам\n⚙️ *Настройки* — услуги, часы\n🔄 *Я клиент/Я мастер* — сменить роль" if master else "📖 *Помощь*\n\n📋 *Мои записи*\n🔗 *Записаться по ссылке*\n📤 *Поделиться ссылкой*\n🔍 *Найти мастера*\n🔄 *Я мастер* — стать мастером")
 
 def handle_callback(chat_id, data):
     if data == "onboarding_skip":
