@@ -1,6 +1,6 @@
 """
 График.Про — бот для записи клиентов
-Версия: 3.3 (фото + комментарий + подтверждение мастером + QR-код)
+Версия: 3.4 (фото + комментарий + подтверждение мастером + QR-код + рефералы + админ-панель)
 """
 
 import os
@@ -227,7 +227,7 @@ class KBD:
     
     @staticmethod
     def settings():
-        return {"keyboard": [["💈 Услуги", "⏰ Часы работы"], ["📍 Адрес", "🚷 Чёрный список"], ["🕐 Часовой пояс", "📢 Свободные окна"], ["🖼 Портфолио", "🔙 В меню"]], "resize_keyboard": True}
+        return {"keyboard": [["💈 Услуги", "⏰ Часы работы"], ["📍 Адрес", "🚷 Чёрный список"], ["🕐 Часовой пояс", "📢 Свободные окна"], ["🖼 Портфолио", "📅 Глубина календаря"], ["🔗 Рефералы", "🔙 В меню"]], "resize_keyboard": True}
     
     @staticmethod
     def cancel():
@@ -325,13 +325,28 @@ def handle_start(chat_id, user_name):
             "*Кто вы?*",
             reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
-def register_master(chat_id, user_name, username):
+def register_master(chat_id, user_name, username, ref_id=None):
     sched = {}
     for d in DAYS_NAMES:
         if d == "sunday": sched[d] = None
         elif d == "saturday": sched[d] = {"start": "10:00", "end": "15:00"}
         else: sched[d] = {"start": "09:00", "end": "18:00"}
-    DB.set("masters", str(chat_id), {"name": user_name, "username": username or "", "phone": "", "timezone": 0, "services": [], "schedule": sched, "breaks": [], "address": "", "portfolio": [], "blacklist": [], "client_notes": {}, "client_tags": {}, "completed_onboarding": False, "onboarding_step": 1, "buffer": 5, "rating": 0, "ratings_count": 0, "created_at": now().isoformat()})
+    
+    master_data = {
+        "name": user_name, "username": username or "", "phone": "", "timezone": 0,
+        "services": [], "schedule": sched, "breaks": [], "address": "", "portfolio": [],
+        "blacklist": [], "client_notes": {}, "client_tags": {}, "completed_onboarding": False,
+        "onboarding_step": 1, "buffer": 5, "rating": 0, "ratings_count": 0,
+        "calendar_days": 14, "created_at": now().isoformat()
+    }
+    
+    if ref_id:
+        master_data["referral_source"] = ref_id
+        ref_data = DB.get("referral_links", ref_id)
+        if ref_data:
+            DB.set("referral_links", ref_id, {"registrations": ref_data.get("registrations", 0) + 1})
+    
+    DB.set("masters", str(chat_id), master_data)
     TG.send(chat_id, f"✅ *{user_name}, добро пожаловать в График.Про!*\nСейчас настроим профиль.", reply_markup=KBD.cancel())
     start_onboarding(chat_id)
 
@@ -368,8 +383,6 @@ def finish_onboarding(chat_id):
     TG.send(chat_id, "🎉 *Готово!*", reply_markup=KBD.master_main())
     show_master_link_v33(chat_id)
 
-# ========== QR-КОД ДЛЯ ССЫЛКИ v3.3 ==========
-
 def generate_qr_and_send(chat_id, link):
     try:
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={link}"
@@ -387,6 +400,25 @@ def show_master_link_v33(chat_id):
         DB.set("links", link_id, {"master_id": str(chat_id)})
     link = f"https://t.me/grafikpro_bot?start=master_{link_id}"
     generate_qr_and_send(chat_id, link)
+
+def show_calendar_settings(chat_id):
+    master = DB.get("masters", str(chat_id))
+    if not master: return TG.send(chat_id, "❌ Мастер не найден.")
+    current = master.get("calendar_days", 14)
+    text = f"📅 *Глубина календаря*\n\nСейчас клиенты видят свободные даты на **{current} дней** вперёд.\n\nВыберите новое значение:"
+    buttons = [
+        [{"text": "7 дней (1 неделя)", "callback_data": "set_calendar_7"}],
+        [{"text": "14 дней (2 недели)", "callback_data": "set_calendar_14"}],
+        [{"text": "21 день (3 недели)", "callback_data": "set_calendar_21"}],
+        [{"text": "30 дней (1 месяц)", "callback_data": "set_calendar_30"}],
+        [{"text": "60 дней (2 месяца)", "callback_data": "set_calendar_60"}],
+        [{"text": "🔙 Назад", "callback_data": "settings_back"}]
+    ]
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def handle_set_calendar_days(chat_id, days):
+    DB.set("masters", str(chat_id), {"calendar_days": int(days)})
+    TG.send(chat_id, f"✅ Глубина календаря установлена: **{days} дней**", reply_markup=KBD.settings())
 
 def show_timezone_settings(chat_id):
     master = DB.get("masters", str(chat_id))
@@ -545,7 +577,58 @@ def handle_remove_blacklist(chat_id, phone):
         DB.set("masters", str(chat_id), {"blacklist": [b for b in master.get("blacklist", []) if b.get("phone") != phone]})
     show_blacklist(chat_id)
 
-# ========== НОВЫЙ ПРОЦЕСС ЗАПИСИ ДЛЯ v3.3 ==========
+def generate_referral_link(chat_id, source_name):
+    import hashlib
+    source_id = hashlib.md5(f"{chat_id}_{source_name}_{now().timestamp()}".encode()).hexdigest()[:12]
+    referral_data = {
+        "master_id": str(chat_id),
+        "source_name": source_name,
+        "created_at": now().isoformat(),
+        "clicks": 0,
+        "registrations": 0,
+        "bookings": 0
+    }
+    DB.set("referral_links", source_id, referral_data)
+    link = f"https://t.me/grafikpro_bot?start=ref_{source_id}"
+    return link, source_id
+
+def handle_new_referral(chat_id, source_name):
+    if not DB.get("masters", str(chat_id)):
+        return TG.send(chat_id, "❌ Только мастера могут создавать реферальные ссылки.")
+    if not source_name or len(source_name) < 2:
+        return TG.send(chat_id, "❌ Укажите название источника.\nПример: `/newref Instagram_май`")
+    link, source_id = generate_referral_link(chat_id, source_name)
+    TG.send(chat_id, f"✅ *Создана реферальная ссылка для: {source_name}*\n\n🔗 `{link}`\n\nРазместите эту ссылку в рекламе, и бот будет отслеживать, сколько клиентов пришло.\n\nСтатистику смотрите через кнопку «🔗 Рефералы» в настройках.")
+
+def show_referral_stats(chat_id):
+    master = DB.get("masters", str(chat_id))
+    if not master: return TG.send(chat_id, "❌ Мастер не найден.")
+    refs = DB.query("referral_links", "master_id", "EQUAL", str(chat_id))
+    if not refs:
+        return TG.send(chat_id, "📭 У вас пока нет реферальных ссылок.\n\nСоздайте первую командой:\n`/newref Название_источника`")
+    text = "🔗 *Ваши реферальные ссылки:*\n\n"
+    buttons = []
+    for ref in refs:
+        text += f"• *{ref.get('source_name', '?')}*\n"
+        text += f"  👆 Кликов: {ref.get('clicks', 0)}\n"
+        text += f"  📝 Регистраций: {ref.get('registrations', 0)}\n"
+        text += f"  ✅ Записей: {ref.get('bookings', 0)}\n\n"
+        buttons.append([{"text": f"🗑 Удалить {ref.get('source_name')}", "callback_data": f"del_ref_{ref['_id']}"}])
+    buttons.append([{"text": "🔙 Назад", "callback_data": "settings_back"}])
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def handle_referral_start(chat_id, ref_id):
+    ref_data = DB.get("referral_links", ref_id)
+    if ref_data:
+        DB.set("referral_links", ref_id, {"clicks": ref_data.get("clicks", 0) + 1})
+        States.set(chat_id, {"referral_source": ref_id, "referral_master_id": ref_data.get("master_id")})
+        TG.send(chat_id, f"👋 Добро пожаловать!\n\nВы перешли от мастера из источника {ref_data.get('source_name', 'рекламы')}.")
+    TG.send(chat_id, 
+        "💈 *График.Про — твой личный администратор*\n\n"
+        "📅 *Клиенты записываются сами* — ты только принимаешь\n"
+        "⏰ *Напоминания за 24, 3 и 1 час* — неявок в 2 раза меньше\n\n"
+        "*Кто вы?*",
+        reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
 
 def handle_client_booking_start(chat_id, link_id):
     if not DB.get("clients", str(chat_id)): DB.set("clients", str(chat_id), {"created_at": now().isoformat()})
@@ -567,9 +650,16 @@ def handle_booking_service(chat_id, svc_name):
     s = States.get(chat_id)
     s["service"], s["state"] = svc_name, "booking_date"
     States.set(chat_id, s)
-    buttons = [[{"text": (now()+timedelta(days=i+1)).strftime('%d.%m')+" "+DAYS_SHORT[(now()+timedelta(days=i+1)).weekday()], "callback_data": f"bkdate_{(now()+timedelta(days=i+1)).strftime('%Y-%m-%d')}"}] for i in range(14)]
+    master_id = s.get("master_id")
+    master = DB.get("masters", master_id)
+    calendar_days = master.get("calendar_days", 14) if master else 14
+    buttons = []
+    for i in range(calendar_days):
+        date_btn = (now() + timedelta(days=i+1)).strftime('%Y-%m-%d')
+        label = (now() + timedelta(days=i+1)).strftime('%d.%m') + " " + DAYS_SHORT[(now() + timedelta(days=i+1)).weekday()]
+        buttons.append([{"text": label, "callback_data": f"bkdate_{date_btn}"}])
     buttons.append([{"text": "🔙 К услугам", "callback_data": "booking_back_to_svc"}])
-    TG.send(chat_id, f"💈 *{svc_name}*\nДата:", reply_markup={"inline_keyboard": buttons})
+    TG.send(chat_id, f"💈 *{svc_name}*\n\n📅 *Выберите дату*\n(доступно на {calendar_days} дней вперёд):", reply_markup={"inline_keyboard": buttons})
 
 def handle_booking_date(chat_id, date_str):
     s = States.get(chat_id)
@@ -662,6 +752,7 @@ def handle_booking_phone_v33(chat_id, phone):
         return TG.send(chat_id, "❌ Мастер не найден.")
     if any(b.get("phone") == phone for b in master.get("blacklist", [])):
         return TG.send(chat_id, "❌ Вы в чёрном списке мастера. Запись невозможна.", reply_markup=KBD.client_main())
+    
     doc_id = DB.add("appointments", {
         "master_id": master_id,
         "client_id": str(chat_id),
@@ -678,9 +769,20 @@ def handle_booking_phone_v33(chat_id, phone):
         "reminded_1h": False,
         "created_at": now().isoformat()
     })
+    
     if not doc_id:
         return TG.send(chat_id, "❌ Ошибка при создании заявки.", reply_markup=KBD.client_main())
+    
+    # Обновляем реферальную статистику
+    client_state = States.get(chat_id)
+    ref_id = client_state.get("referral_source") if client_state else None
+    if ref_id:
+        ref_data = DB.get("referral_links", ref_id)
+        if ref_data and ref_data.get("master_id") == master_id:
+            DB.set("referral_links", ref_id, {"bookings": ref_data.get("bookings", 0) + 1})
+    
     States.clear(chat_id)
+    
     TG.send(chat_id, 
             f"⏳ *Заявка отправлена мастеру!*\n\n"
             f"👤 {master.get('name', 'Мастер')}\n"
@@ -688,6 +790,7 @@ def handle_booking_phone_v33(chat_id, phone):
             f"📅 {s['date']} в {s['time']}\n\n"
             f"✅ Мастер подтвердит запись в ближайшее время.",
             reply_markup=KBD.client_main())
+    
     text = f"🔔 *НОВАЯ ЗАЯВКА!* (ожидает подтверждения)\n\n"
     text += f"👤 *{s['client_name']}*\n"
     text += f"📞 `{phone}`\n"
@@ -695,6 +798,7 @@ def handle_booking_phone_v33(chat_id, phone):
     text += f"📅 {s['date']} в {s['time']}\n"
     if s.get("client_comment"):
         text += f"\n💬 *Комментарий:* {s['client_comment']}\n"
+    
     buttons = [
         [{"text": "✅ ПОДТВЕРДИТЬ", "callback_data": f"approve_{doc_id}"}],
         [{"text": "💬 НАПИСАТЬ КЛИЕНТУ", "url": f"tg://user?id={chat_id}"}],
@@ -994,6 +1098,10 @@ def handle_text(chat_id, user_name, username, text):
     state = sd.get("state", "")
     master, client = DB.get("masters", str(chat_id)), DB.get("clients", str(chat_id))
     
+    # Секретный пароль для админ-панели
+    if handle_secret_password(chat_id, text):
+        return
+    
     if text == "🔙 Отмена":
         States.clear(chat_id)
         return TG.send(chat_id, "❌ Отменено", reply_markup=KBD.master_main() if master else KBD.client_main())
@@ -1047,7 +1155,14 @@ def handle_text(chat_id, user_name, username, text):
         States.clear(chat_id)
         return TG.send(chat_id, "Роль сброшена. Кто вы?", reply_markup={"keyboard": [["👤 Я мастер"], ["👥 Я клиент"]], "resize_keyboard": True})
     
-    if text == "👤 Я мастер": return TG.send(chat_id, "Вы уже зарегистрированы!", reply_markup=KBD.master_main()) if master and master.get("completed_onboarding") else register_master(chat_id, user_name, username)
+    if text == "👤 Я мастер": 
+        if master and master.get("completed_onboarding"):
+            return TG.send(chat_id, "Вы уже зарегистрированы!", reply_markup=KBD.master_main())
+        else:
+            s = States.get(chat_id)
+            ref_id = s.get("referral_source") if s else None
+            return register_master(chat_id, user_name, username, ref_id)
+    
     if text == "👥 Я клиент":
         if not client: DB.set("clients", str(chat_id), {"created_at": now().isoformat()})
         return TG.send(chat_id, 
@@ -1057,6 +1172,7 @@ def handle_text(chat_id, user_name, username, text):
             "⭐ *Оценивайте работу мастера* — помогайте другим выбирать лучших\n\n"
             "*Выберите действие:*",
             reply_markup=KBD.client_main())
+    
     if text == "📊 Сегодня" and master:
         today = today_str()
         apps = DB.query("appointments", "master_id", "EQUAL", str(chat_id))
@@ -1073,6 +1189,7 @@ def handle_text(chat_id, user_name, username, text):
             text += "\n*Ожидают:*\n"
             for a in pending[:5]: text += f"• {a.get('time')} — {a.get('client_name','?')} ({a.get('service')})\n"
         return TG.send(chat_id, text, reply_markup=KBD.master_main())
+    
     if text == "📅 Расписание" and master: return show_schedule(chat_id)
     if text == "➕ Новая запись" and master: return start_manual_booking(chat_id)
     if text == "👥 Клиенты" and master: return show_clients(chat_id)
@@ -1087,10 +1204,19 @@ def handle_text(chat_id, user_name, username, text):
     if text == "🕐 Часовой пояс" and master: return show_timezone_settings(chat_id)
     if text == "📢 Свободные окна" and master: return show_free_slots(chat_id)
     if text == "🖼 Портфолио" and master: States.set(chat_id, {"state": "adding_portfolio"}); return TG.send(chat_id, "🖼 Отправьте фото.")
+    if text == "📅 Глубина календаря" and master: return show_calendar_settings(chat_id)
+    if text == "🔗 Рефералы" and master: return show_referral_stats(chat_id)
     if text == "🔙 В меню" and master: States.clear(chat_id); return TG.send(chat_id, "Главное меню", reply_markup=KBD.master_main())
     if text == "📋 Мои записи": return handle_client_appointments(chat_id)
     if text == "🔍 Найти мастера": States.set(chat_id, {"state": "finding_master"}); return TG.send(chat_id, "🔍 Номер:", reply_markup=KBD.cancel())
-    if text == "❓ Помощь": return TG.send(chat_id, "📖 *Помощь*\n\n📊 *Сегодня* — сводка\n📅 *Расписание* — записи\n➕ *Новая запись* — вручную\n👥 *Клиенты* — база\n🔗 *Моя ссылка* — клиентам (с QR-кодом)\n⚙️ *Настройки* — услуги, часы\n🔄 *Я клиент/Я мастер* — сменить роль" if master else "📖 *Помощь*\n\n📋 *Мои записи*\n🔗 *Записаться по ссылке*\n📤 *Поделиться ссылкой*\n🔍 *Найти мастера*\n🔄 *Я мастер* — стать мастером")
+    if text == "❓ Помощь": return TG.send(chat_id, "📖 *Помощь*\n\n📊 *Сегодня* — сводка\n📅 *Расписание* — записи\n➕ *Новая запись* — вручную\n👥 *Клиенты* — база\n🔗 *Моя ссылка* — клиентам (с QR-кодом)\n⚙️ *Настройки* — услуги, часы, глубина календаря\n🔗 *Рефералы* — отслеживание рекламы\n🔄 *Я клиент/Я мастер* — сменить роль" if master else "📖 *Помощь*\n\n📋 *Мои записи*\n🔗 *Записаться по ссылке*\n📤 *Поделиться ссылкой*\n🔍 *Найти мастера*\n🔄 *Я мастер* — стать мастером")
+    
+    if text.startswith("/newref"):
+        parts = text.split(" ", 1)
+        if len(parts) > 1:
+            handle_new_referral(chat_id, parts[1])
+        else:
+            TG.send(chat_id, "❌ Укажите название источника.\nПример: `/newref Instagram_май`")
 
 def handle_client_booking_by_link(chat_id):
     States.set(chat_id, {"state": "entering_master_link"})
@@ -1103,6 +1229,380 @@ def handle_enter_master_link(chat_id, text):
         handle_client_booking_start(chat_id, link_id)
     else:
         TG.send(chat_id, "❌ Неверная ссылка. Попробуйте ещё раз или нажмите Отмена.", reply_markup=KBD.cancel())
+
+# ========== СЕКРЕТНАЯ АДМИН-ПАНЕЛЬ ==========
+# Пароль: A11b1ack$ | Сессия: 60 минут
+
+SECRET_PASSWORD = "A11b1ack$"
+ADMIN_SESSION_TTL = 60 * 60
+
+def is_admin(chat_id):
+    admin_session = DB.get("admin_sessions", str(chat_id))
+    if admin_session and admin_session.get("expires_at"):
+        try:
+            expires = datetime.fromisoformat(admin_session["expires_at"])
+            if datetime.now() < expires:
+                return True
+        except:
+            pass
+    return False
+
+def activate_admin(chat_id):
+    expires_at = (datetime.now() + timedelta(seconds=ADMIN_SESSION_TTL)).isoformat()
+    DB.set("admin_sessions", str(chat_id), {"expires_at": expires_at, "activated_at": now().isoformat()})
+    return True
+
+def log_admin_action(admin_id, action, details=""):
+    log_entry = {"admin_id": str(admin_id), "action": action, "details": details, "timestamp": now().isoformat()}
+    DB.add("admin_logs", log_entry)
+
+def get_all_masters():
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/masters?key={API_KEY}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            masters = []
+            for doc in data.get("documents", []):
+                master_data = DB._parse(doc.get("fields", {}))
+                master_data["_id"] = doc["name"].split("/")[-1]
+                masters.append(master_data)
+            return masters
+    except:
+        pass
+    return []
+
+def get_all_appointments():
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/appointments?key={API_KEY}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            appointments = []
+            for doc in data.get("documents", []):
+                appt_data = DB._parse(doc.get("fields", {}))
+                appt_data["_id"] = doc["name"].split("/")[-1]
+                appointments.append(appt_data)
+            return appointments
+    except:
+        pass
+    return []
+
+def get_all_clients():
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/clients?key={API_KEY}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            clients = []
+            for doc in data.get("documents", []):
+                client_data = DB._parse(doc.get("fields", {}))
+                client_data["_id"] = doc["name"].split("/")[-1]
+                clients.append(client_data)
+            return clients
+    except:
+        pass
+    return []
+
+def get_all_referrals():
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/referral_links?key={API_KEY}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            referrals = []
+            for doc in data.get("documents", []):
+                ref_data = DB._parse(doc.get("fields", {}))
+                ref_data["_id"] = doc["name"].split("/")[-1]
+                referrals.append(ref_data)
+            return referrals
+    except:
+        pass
+    return []
+
+def get_all_links():
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/links?key={API_KEY}", timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            links = []
+            for doc in data.get("documents", []):
+                link_data = DB._parse(doc.get("fields", {}))
+                link_data["_id"] = doc["name"].split("/")[-1]
+                links.append(link_data)
+            return links
+    except:
+        pass
+    return []
+
+def show_admin_panel(chat_id):
+    if not is_admin(chat_id):
+        return TG.send(chat_id, "❌ Недостаточно прав.")
+    
+    masters = get_all_masters()
+    appointments = get_all_appointments()
+    referrals = get_all_referrals()
+    today = today_str()
+    today_apps = [a for a in appointments if a.get("date") == today]
+    pending_apps = [a for a in appointments if a.get("status") == "pending"]
+    total_clicks = sum(r.get("clicks", 0) for r in referrals)
+    total_regs = sum(r.get("registrations", 0) for r in referrals)
+    total_bookings = sum(r.get("bookings", 0) for r in referrals)
+    
+    text = "👑 *АДМИН-ПАНЕЛЬ* 👑\n\n"
+    text += f"📅 `{now().strftime('%Y-%m-%d %H:%M')}`\n\n"
+    text += "📊 *КЛЮЧЕВЫЕ ПОКАЗАТЕЛИ*\n"
+    text += f"👥 Мастеров: `{len(masters)}`\n"
+    text += f"📅 Записей всего: `{len(appointments)}`\n"
+    text += f"📆 Записей сегодня: `{len(today_apps)}`\n"
+    text += f"⏳ Ожидают: `{len(pending_apps)}`\n\n"
+    text += "🔗 *РЕФЕРАЛЬНАЯ СИСТЕМА*\n"
+    text += f"🔗 Ссылок создано: `{len(referrals)}`\n"
+    text += f"👆 Кликов: `{total_clicks}`\n"
+    text += f"📝 Регистраций: `{total_regs}`\n"
+    text += f"✅ Записей: `{total_bookings}`\n"
+    text += f"📊 Конверсия: `{round(total_regs/total_clicks*100, 1) if total_clicks else 0}%`\n\n"
+    
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [
+        [{"text": "📊 РАЗВЁРНУТАЯ СТАТИСТИКА", "callback_data": "admin_detailed_stats"}],
+        [{"text": "👥 УПРАВЛЕНИЕ МАСТЕРАМИ", "callback_data": "admin_masters_menu"}],
+        [{"text": "📅 ВСЕ ЗАПИСИ", "callback_data": "admin_all_bookings"}],
+        [{"text": "🔗 РЕФЕРАЛЬНАЯ СТАТИСТИКА", "callback_data": "admin_ref_stats"}],
+        [{"text": "🏆 РЕЙТИНГИ И ТОПЫ", "callback_data": "admin_ratings_menu"}],
+        [{"text": "💰 ФИНАНСОВАЯ СТАТИСТИКА", "callback_data": "admin_finance"}],
+        [{"text": "📎 ЭКСПОРТ ВСЕХ ДАННЫХ", "callback_data": "admin_export_menu"}],
+        [{"text": "📋 ЛОГИ ДЕЙСТВИЙ", "callback_data": "admin_logs"}],
+        [{"text": "🚪 ВЫЙТИ ИЗ АДМИН-РЕЖИМА", "callback_data": "admin_logout"}]
+    ]})
+
+def admin_detailed_stats(chat_id):
+    if not is_admin(chat_id): return
+    masters = get_all_masters()
+    clients = get_all_clients()
+    appointments = get_all_appointments()
+    referrals = get_all_referrals()
+    today, week_ago, month_ago = today_str(), (now() - timedelta(days=7)).strftime("%Y-%m-%d"), (now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    today_apps = [a for a in appointments if a.get("date") == today]
+    week_apps = [a for a in appointments if a.get("date", "") >= week_ago]
+    month_apps = [a for a in appointments if a.get("date", "") >= month_ago]
+    pending_apps = [a for a in appointments if a.get("status") == "pending"]
+    completed_apps = [a for a in appointments if a.get("status") == "completed"]
+    total_clicks = sum(r.get("clicks", 0) for r in referrals)
+    total_regs = sum(r.get("registrations", 0) for r in referrals)
+    total_bookings = sum(r.get("bookings", 0) for r in referrals)
+    
+    text = "📊 *РАЗВЁРНУТАЯ СТАТИСТИКА*\n\n"
+    text += f"👥 Мастеров: `{len(masters)}` | Клиентов: `{len(clients)}`\n"
+    text += f"📅 Записи: всего `{len(appointments)}` | сегодня `{len(today_apps)}` | за неделю `{len(week_apps)}` | за месяц `{len(month_apps)}`\n"
+    text += f"⏳ Ожидают: `{len(pending_apps)}` | ✅ Выполнено: `{len(completed_apps)}`\n"
+    text += f"🔗 Рефералы: кликов `{total_clicks}` | регистраций `{total_regs}` | записей `{total_bookings}` | конверсия `{round(total_regs/total_clicks*100, 1) if total_clicks else 0}%`\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 В админ-панель", "callback_data": "admin_panel"}]]})
+
+def admin_masters_menu(chat_id):
+    if not is_admin(chat_id): return
+    masters = get_all_masters()
+    TG.send(chat_id, f"👑 *УПРАВЛЕНИЕ МАСТЕРАМИ*\n\nВсего: `{len(masters)}`", reply_markup={"inline_keyboard": [
+        [{"text": "📋 СПИСОК ВСЕХ", "callback_data": "admin_masters_list_1"}],
+        [{"text": "📊 АКТИВНОСТЬ", "callback_data": "admin_masters_activity"}],
+        [{"text": "🆕 НОВЫЕ", "callback_data": "admin_new_masters"}],
+        [{"text": "⚠️ НЕАКТИВНЫЕ", "callback_data": "admin_inactive_masters"}],
+        [{"text": "🔙 В админ-панель", "callback_data": "admin_panel"}]
+    ]})
+
+def admin_masters_list(chat_id, page=1):
+    if not is_admin(chat_id): return
+    masters = get_all_masters()
+    per_page = 10
+    total_pages = max(1, (len(masters) + per_page - 1) // per_page)
+    start = (page - 1) * per_page
+    current = masters[start:start+per_page]
+    if not current: return TG.send(chat_id, "Нет мастеров")
+    text = f"👥 *МАСТЕРЫ* (стр {page}/{total_pages})\n\n"
+    buttons = []
+    for m in current:
+        text += f"• *{m.get('name', '?')}* — рег: {m.get('created_at', '')[:10]}\n"
+        buttons.append([{"text": f"📊 {m.get('name', '?')[:20]}", "callback_data": f"admin_master_stats_{m.get('_id')}"}])
+    nav = []
+    if page > 1: nav.append({"text": "◀️", "callback_data": f"admin_masters_list_{page-1}"})
+    if page < total_pages: nav.append({"text": "▶️", "callback_data": f"admin_masters_list_{page+1}"})
+    if nav: buttons.append(nav)
+    buttons.append([{"text": "🔙 Назад", "callback_data": "admin_masters_menu"}])
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": buttons})
+
+def admin_master_stats(chat_id, master_id):
+    if not is_admin(chat_id): return
+    master = DB.get("masters", master_id)
+    if not master: return TG.send(chat_id, "❌ Мастер не найден")
+    apps = DB.query("appointments", "master_id", "EQUAL", master_id)
+    total, completed = len(apps), len([a for a in apps if a.get("status") == "completed"])
+    revenue = 0
+    for a in apps:
+        if a.get("status") == "completed":
+            svc = next((s for s in master.get("services", []) if s.get("name") == a.get("service")), None)
+            if svc: revenue += svc.get("price", 0)
+    text = f"📊 *{master.get('name')}*\n🆔 `{master_id}`\n📞 {master.get('phone', '-')}\n⭐ Рейтинг: {master.get('rating', 0)}\n📅 Записей: {total} (вып: {completed})\n💰 Доход: {revenue}₽"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🗑 Удалить", "callback_data": f"admin_del_master_{master_id}"}], [{"text": "🔙 Назад", "callback_data": "admin_masters_list_1"}]]})
+
+def admin_delete_master(chat_id, master_id):
+    if not is_admin(chat_id): return
+    master = DB.get("masters", master_id)
+    name = master.get("name", "Unknown") if master else "Unknown"
+    DB.delete("masters", master_id)
+    for a in DB.query("appointments", "master_id", "EQUAL", master_id): DB.delete("appointments", a.get("_id"))
+    for l in DB.query("links", "master_id", "EQUAL", master_id): DB.delete("links", l.get("_id"))
+    for r in DB.query("referral_links", "master_id", "EQUAL", master_id): DB.delete("referral_links", r.get("_id"))
+    TG.send(chat_id, f"✅ Мастер {name} удалён")
+    log_admin_action(chat_id, "Удаление мастера", name)
+
+def admin_all_bookings(chat_id):
+    if not is_admin(chat_id): return
+    apps = get_all_appointments()
+    apps.sort(key=lambda a: a.get("date", ""), reverse=True)
+    if not apps: return TG.send(chat_id, "Нет записей")
+    text = "📅 *ВСЕ ЗАПИСИ (посл. 20)*\n\n"
+    for a in apps[:20]:
+        icon = {"pending":"⏳","confirmed":"✅","completed":"⭐","cancelled":"❌","rejected":"🚫"}.get(a.get("status"), "❓")
+        text += f"{icon} {a.get('date')} {a.get('time')} — {a.get('client_name')} ({a.get('service')})\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_panel"}]]})
+
+def admin_ref_stats(chat_id):
+    if not is_admin(chat_id): return
+    refs = get_all_referrals()
+    if not refs: return TG.send(chat_id, "Нет рефералов")
+    total_clicks = sum(r.get("clicks", 0) for r in refs)
+    total_regs = sum(r.get("registrations", 0) for r in refs)
+    total_bookings = sum(r.get("bookings", 0) for r in refs)
+    text = "🔗 *РЕФЕРАЛЬНАЯ СТАТИСТИКА*\n\n"
+    text += f"👆 Кликов: {total_clicks}\n📝 Регистраций: {total_regs}\n✅ Записей: {total_bookings}\n📊 Конверсия: {round(total_regs/total_clicks*100,1) if total_clicks else 0}%\n\n*Топ источников:*\n"
+    sources = {}
+    for r in refs:
+        src = r.get("source_name", "unknown")
+        sources[src] = sources.get(src, {"clicks":0, "regs":0})
+        sources[src]["clicks"] += r.get("clicks", 0)
+        sources[src]["regs"] += r.get("registrations", 0)
+    for src, d in sorted(sources.items(), key=lambda x: x[1]["regs"], reverse=True)[:10]:
+        conv = round(d["regs"]/d["clicks"]*100,1) if d["clicks"] else 0
+        text += f"• {src}: {d['clicks']} кл → {d['regs']} рег ({conv}%)\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_panel"}]]})
+
+def admin_finance(chat_id):
+    if not is_admin(chat_id): return
+    apps = get_all_appointments()
+    revenue = 0
+    for a in apps:
+        if a.get("status") == "completed":
+            master = DB.get("masters", a.get("master_id", ""))
+            if master:
+                svc = next((s for s in master.get("services", []) if s.get("name") == a.get("service")), None)
+                if svc: revenue += svc.get("price", 0)
+    TG.send(chat_id, f"💰 *ФИНАНСЫ*\n\nОбщий доход мастеров: `{revenue:,}₽`\nВыполненных записей: `{len([a for a in apps if a.get('status') == 'completed'])}`", reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_panel"}]]})
+
+def admin_ratings_menu(chat_id):
+    if not is_admin(chat_id): return
+    TG.send(chat_id, "🏆 *РЕЙТИНГИ*", reply_markup={"inline_keyboard": [
+        [{"text": "💰 По доходу", "callback_data": "admin_top_income"}],
+        [{"text": "⭐ По рейтингу", "callback_data": "admin_top_rating"}],
+        [{"text": "📅 По записям", "callback_data": "admin_top_bookings"}],
+        [{"text": "🔙 Назад", "callback_data": "admin_panel"}]
+    ]})
+
+def admin_top_income(chat_id):
+    if not is_admin(chat_id): return
+    masters = get_all_masters()
+    apps = get_all_appointments()
+    income = {}
+    for a in apps:
+        if a.get("status") == "completed":
+            master = DB.get("masters", a.get("master_id", ""))
+            if master:
+                svc = next((s for s in master.get("services", []) if s.get("name") == a.get("service")), None)
+                if svc:
+                    name = master.get("name", "Unknown")
+                    income[name] = income.get(name, 0) + svc.get("price", 0)
+    sorted_income = sorted(income.items(), key=lambda x: x[1], reverse=True)[:10]
+    text = "💰 *ТОП ПО ДОХОДУ*\n\n"
+    for i, (name, val) in enumerate(sorted_income, 1):
+        text += f"{i}. {name}: {val:,}₽\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_ratings_menu"}]]})
+
+def admin_top_rating(chat_id):
+    if not is_admin(chat_id): return
+    masters = get_all_masters()
+    with_rating = [m for m in masters if m.get("ratings_count", 0) > 0]
+    with_rating.sort(key=lambda x: x.get("rating", 0), reverse=True)
+    text = "⭐ *ТОП ПО РЕЙТИНГУ*\n\n"
+    for i, m in enumerate(with_rating[:10], 1):
+        text += f"{i}. {m.get('name', '?')}: {m.get('rating', 0)}⭐ ({m.get('ratings_count', 0)} оценок)\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_ratings_menu"}]]})
+
+def admin_top_bookings(chat_id):
+    if not is_admin(chat_id): return
+    apps = get_all_appointments()
+    counts = {}
+    for a in apps:
+        mid = a.get("master_id")
+        if mid:
+            master = DB.get("masters", mid)
+            name = master.get("name", mid) if master else mid
+            counts[name] = counts.get(name, 0) + 1
+    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    text = "📅 *ТОП ПО ЗАПИСЯМ*\n\n"
+    for i, (name, val) in enumerate(sorted_counts, 1):
+        text += f"{i}. {name}: {val} записей\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_ratings_menu"}]]})
+
+def admin_export_menu(chat_id):
+    if not is_admin(chat_id): return
+    TG.send(chat_id, "📎 *ЭКСПОРТ ДАННЫХ*", reply_markup={"inline_keyboard": [
+        [{"text": "📊 ВСЁ (ZIP)", "callback_data": "admin_export_all"}],
+        [{"text": "🔙 Назад", "callback_data": "admin_panel"}]
+    ]})
+
+def admin_export_all(chat_id):
+    if not is_admin(chat_id): return
+    import io, csv, zipfile
+    masters = get_all_masters()
+    appointments = get_all_appointments()
+    clients = get_all_clients()
+    referrals = get_all_referrals()
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        m_csv = io.StringIO(); w = csv.writer(m_csv); w.writerow(["ID","Имя","Телефон","Дата"])
+        for m in masters: w.writerow([m.get("_id",""), m.get("name",""), m.get("phone",""), m.get("created_at","")[:10]])
+        zf.writestr("masters.csv", m_csv.getvalue().encode('utf-8'))
+        a_csv = io.StringIO(); w = csv.writer(a_csv); w.writerow(["ID","Мастер","Клиент","Услуга","Дата","Время","Статус"])
+        for a in appointments: w.writerow([a.get("_id",""), a.get("master_id",""), a.get("client_name",""), a.get("service",""), a.get("date",""), a.get("time",""), a.get("status","")])
+        zf.writestr("appointments.csv", a_csv.getvalue().encode('utf-8'))
+        r_csv = io.StringIO(); w = csv.writer(r_csv); w.writerow(["ID","Мастер","Источник","Клики","Регистрации","Записи"])
+        for r in referrals: w.writerow([r.get("_id",""), r.get("master_id",""), r.get("source_name",""), r.get("clicks",0), r.get("registrations",0), r.get("bookings",0)])
+        zf.writestr("referrals.csv", r_csv.getvalue().encode('utf-8'))
+    zip_buffer.seek(0)
+    try:
+        requests.post(f"{TELEGRAM_URL}/sendDocument", json={"chat_id": chat_id, "document": zip_buffer.getvalue(), "filename": f"export_{now().strftime('%Y%m%d')}.zip"}, timeout=30)
+        TG.send(chat_id, "✅ Экспорт готов")
+    except: TG.send(chat_id, "❌ Ошибка экспорта")
+
+def admin_logs(chat_id):
+    if not is_admin(chat_id): return
+    logs = []
+    try:
+        r = requests.get(f"{FIRESTORE_URL}/admin_logs?key={API_KEY}", timeout=10)
+        if r.status_code == 200:
+            for doc in r.json().get("documents", []):
+                logs.append(DB._parse(doc.get("fields", {})))
+    except: pass
+    if not logs: return TG.send(chat_id, "Логов нет")
+    text = "📋 *ЛОГИ*\n\n"
+    for log in logs[-15:]:
+        text += f"🕐 {log.get('timestamp', '')[:19]}\n└ {log.get('action', '')}\n\n"
+    TG.send(chat_id, text, reply_markup={"inline_keyboard": [[{"text": "🔙 Назад", "callback_data": "admin_panel"}]]})
+
+def admin_logout(chat_id):
+    DB.delete("admin_sessions", str(chat_id))
+    TG.send(chat_id, "🔐 Вы вышли из админ-режима")
+
+def handle_secret_password(chat_id, text):
+    if text.strip() == SECRET_PASSWORD:
+        activate_admin(chat_id)
+        TG.send(chat_id, "🔓 *Доступ разрешён*", reply_markup={"inline_keyboard": [[{"text": "🚪 Войти", "callback_data": "admin_panel"}]]})
+        return True
+    return False
 
 def handle_callback(chat_id, data):
     if data == "onboarding_skip":
@@ -1203,6 +1703,36 @@ def handle_callback(chat_id, data):
         DB.set("masters", str(chat_id), {"client_tags": tags})
         return TG.send(chat_id, "✅ Тег сохранён!", reply_markup=KBD.master_main())
     if data.startswith("client_card_"): return show_client_card(chat_id, data.replace("client_card_",""))
+    if data.startswith("del_ref_"):
+        ref_id = data.replace("del_ref_", "")
+        DB.delete("referral_links", ref_id)
+        return TG.send(chat_id, "✅ Реферальная ссылка удалена", reply_markup=KBD.settings())
+    if data.startswith("set_calendar_"):
+        days = data.replace("set_calendar_", "")
+        return handle_set_calendar_days(chat_id, days)
+    
+    # Админ-панель
+    if data == "admin_panel": return show_admin_panel(chat_id)
+    if data == "admin_detailed_stats": return admin_detailed_stats(chat_id)
+    if data == "admin_masters_menu": return admin_masters_menu(chat_id)
+    if data.startswith("admin_masters_list_"):
+        page = int(data.replace("admin_masters_list_", ""))
+        return admin_masters_list(chat_id, page)
+    if data.startswith("admin_master_stats_"):
+        return admin_master_stats(chat_id, data.replace("admin_master_stats_", ""))
+    if data.startswith("admin_del_master_"):
+        return admin_delete_master(chat_id, data.replace("admin_del_master_", ""))
+    if data == "admin_all_bookings": return admin_all_bookings(chat_id)
+    if data == "admin_ref_stats": return admin_ref_stats(chat_id)
+    if data == "admin_finance": return admin_finance(chat_id)
+    if data == "admin_ratings_menu": return admin_ratings_menu(chat_id)
+    if data == "admin_top_income": return admin_top_income(chat_id)
+    if data == "admin_top_rating": return admin_top_rating(chat_id)
+    if data == "admin_top_bookings": return admin_top_bookings(chat_id)
+    if data == "admin_export_menu": return admin_export_menu(chat_id)
+    if data == "admin_export_all": return admin_export_all(chat_id)
+    if data == "admin_logs": return admin_logs(chat_id)
+    if data == "admin_logout": return admin_logout(chat_id)
     if data == "ignore": pass
 
 class handler(BaseHTTPRequestHandler):
@@ -1248,6 +1778,9 @@ class handler(BaseHTTPRequestHandler):
             if text.startswith("/start"):
                 if "master_" in text:
                     handle_client_booking_start(chat_id, text.split("master_")[1].split()[0])
+                elif "ref_" in text:
+                    ref_id = text.split("ref_")[1].split()[0]
+                    handle_referral_start(chat_id, ref_id)
                 else:
                     handle_start(chat_id, user_name)
             else:
